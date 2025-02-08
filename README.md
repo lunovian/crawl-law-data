@@ -1,6 +1,51 @@
-# Crawl Law Data
+# Law Document Crawler
 
-This project is designed to crawl and download legal documents from the LuatVietnam website. It uses parallel processing to efficiently handle multiple URLs and files.
+Tool for downloading law documents from luatvietnam.vn
+
+## Setup
+
+1. Create and activate virtual environment:
+
+```bash
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate     # Windows
+```
+
+2. Install package:
+
+```bash
+pip install -e .
+```
+
+3. First-time login:
+
+```bash
+python login.py
+```
+
+4. Run crawler:
+
+```bash
+python -m crawl.crawler [options]
+```
+
+## Usage
+
+Place Excel files containing URLs in the `batches` folder. Each file should have:
+
+- `Url` column: Document URLs
+- `Lĩnh vực` column: Document categories
+- `Ban hành` column: Issue date (dd/mm/yyyy)
+
+## Options
+
+- `--debug`: Enable debug mode
+- `--url URL`: Process single URL
+- `--workers N`: Number of download workers
+- `--batch-size N`: Files per batch
+- `--retry`: Retry failed downloads
+- `--no-resume`: Start fresh download
 
 ## Features
 
@@ -15,51 +60,6 @@ You can install the required packages using the following command:
 
 ```bash
 pip install -r requirements.txt
-```
-
-## Setup
-
-### 1. Login Setup
-
-Before running the crawler, you need to log in to the LuatVietnam website to create a session and save cookies.
-
-Run the following command:
-
-```bash
-python login.py
-```
-
-This will open a browser window for manual login. Once logged in, the cookies will be saved for future use.
-
-### 2. Prepare Excel Files
-
-Place your Excel files containing the URLs to be crawled in the `batches` folder. Each Excel file should have at least the following columns:
-
-- `Url`: The URL of the document to be downloaded
-- `Lĩnh vực`: The field(s) of the document, separated by semicolons
-- `Ban hành`: The issuance date of the document in the format `dd/mm/yyyy`
-
-### 3. Run the Crawler
-
-Run the following command to start the crawler:
-
-```bash
-python crawl.py
-```
-
-### Command Line Arguments
-
-- `--debug`: Enable debug mode
-- `--url`: Debug a single URL
-- `--no-resume`: Disable resume capability
-- `--workers`: Number of download workers (default: auto)
-- `--batch-size`: Number of files to process in each batch (default: 5)
-- `--retry`: Retry failed downloads without file locking
-
-### Example Usage
-
-```bash
-python crawl.py --workers 4 --batch-size 50
 ```
 
 ## Workflow

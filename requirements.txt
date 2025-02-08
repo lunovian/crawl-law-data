@@ -6,7 +6,7 @@ lxml
 selenium
 webdriver_manager
 cryptography
-selenium-stealth
+selenium-stealth>=1.0.6
 psutil
 filelock
 portalocker
