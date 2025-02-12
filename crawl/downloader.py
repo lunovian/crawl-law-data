@@ -1,27 +1,19 @@
-"""
-Document downloading and link extraction module.
-Features:
-- Thread-safe file downloading
-- Parallel download management
-- Document link detection
-- Duplicate file handling
-- File locking mechanisms
-"""
-
 import os
 import requests
+import portalocker
 import atexit
-import time
+from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from concurrent.futures import ThreadPoolExecutor  # Add this import
 from utils.common import setup_logger, DownloadStats
-from utils.document_formatter import format_document_name  # Remove format_title import
-import re  # Add this import if not already present
-from lxml import html  # Add this import
-import urllib3
-
-# Suppress SSL warnings globally since we're dealing with a known host
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from utils.document_formatter import format_document_name
+import re
+from lxml import html
+import aiohttp
+import asyncio
+import aiofiles
+from typing import List, Dict, Tuple
+from dataclasses import dataclass
+from tqdm.asyncio import tqdm_asyncio
 
 active_locks = set()
 
@@ -32,8 +24,8 @@ def cleanup_locks():
         try:
             if os.path.exists(lock_file):
                 os.unlink(lock_file)
-        except:
-            pass  # Ignore errors during cleanup
+        except OSError:
+            pass
 
 
 # Register cleanup function
@@ -41,52 +33,48 @@ atexit.register(cleanup_locks)
 
 
 def download_file(url, filename, folder="downloads", retry_mode=False, title=None):
-    """Enhanced download with connection pooling and chunked transfer"""
-    logger = setup_logger()
+    """Thread-safe and process-safe file download with robust locking"""
+    # Get extension from URL
+    ext = os.path.splitext(url)[1].lower()
+    if not ext:
+        ext = ".pdf" if ".pdf" in url.lower() else ".doc"
+
+    # Format the filename and add proper extension
+    formatted_filename = format_document_name(filename)
+    final_filename = f"{formatted_filename}{ext}"
+
+    # Create lock file path
+    lock_file = os.path.join(folder, f"{final_filename}.lock")
 
     try:
         if not os.path.exists(folder):
             os.makedirs(folder, exist_ok=True)
 
-        filepath = os.path.join(folder, filename)
+        filepath = os.path.join(folder, final_filename)
 
-        # Use session with keep-alive and optimized settings
-        session = requests.Session()
-        session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "*/*",
-                "Accept-Encoding": "gzip, deflate",
-                "Connection": "keep-alive",
-            }
-        )
+        # Skip locking in retry mode
+        if retry_mode:
+            return _do_download(url, filepath)
 
-        if "static.luatvietnam.vn" in url:
-            session.verify = False
+        # Use portalocker for cross-process locking
+        with portalocker.Lock(lock_file, timeout=60):
+            if os.path.exists(filepath):  # Check again after acquiring lock
+                return True, None
 
-        # Use stream mode with larger chunk size
-        response = session.get(url, stream=True, timeout=(5, 30))
+            result = _do_download(url, filepath)
+            return result
 
-        if response.status_code == 200:
-            with open(filepath, "wb") as f:
-                for chunk in response.iter_content(
-                    chunk_size=16384
-                ):  # Increased chunk size
-                    if chunk:
-                        f.write(chunk)
-            return True, None
-        else:
-            logger.error(
-                f"Download failed with status {response.status_code} for {url}"
-            )
-            return False, f"HTTP {response.status_code}"
-
+    except portalocker.exceptions.LockException:
+        # If we timeout waiting for lock, skip this file
+        return False, "File locked by another process"
     except Exception as e:
-        logger.error(f"Error downloading {url}: {str(e)}")
         return False, str(e)
     finally:
-        if "session" in locals():
-            session.close()
+        try:
+            if os.path.exists(lock_file):
+                os.unlink(lock_file)
+        except OSError:
+            pass
 
 
 def _do_download(url, filepath):
@@ -118,51 +106,44 @@ def _do_download(url, filepath):
 def download_files_parallel(
     urls, filenames, folders, max_workers=None, batch_size=5, retry_mode=False
 ):
-    """Optimized parallel download handling"""
-    logger = setup_logger()
+    """Enhanced parallel download using FastDownloader"""
+
+    async def run_downloads():
+        downloader = FastDownloader(concurrent_limit=max_workers or 8)
+
+        # Create download tasks
+        tasks = [
+            DownloadTask(url=url, filename=fname, folder=folder)
+            for url, fname, folder in zip(urls, filenames, folders)
+        ]
+
+        # Process in batches
+        results = []
+        for i in range(0, len(tasks), batch_size):
+            batch = tasks[i : i + batch_size]
+            batch_results = await downloader.process_batch(batch)
+            results.extend(batch_results)
+
+        await downloader.close()
+        return results
+
+    # Run async downloads
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        results = loop.run_until_complete(run_downloads())
+    finally:
+        loop.close()
+
+    # Process results
     status = DownloadStats()
+    for (url, filename, folder), (success, error) in zip(
+        zip(urls, filenames, folders), results
+    ):
+        filepath = os.path.join(folder, filename)
+        status.add_download(url, filepath, success=success, error=error)
 
-    if not max_workers:
-        max_workers = min(len(urls), 8)  # Increased default max workers
-
-    # Group downloads by domain to reuse connections
-    domain_groups = {}
-    for url, filename, folder in zip(urls, filenames, folders):
-        domain = url.split("/")[2]
-        if domain not in domain_groups:
-            domain_groups[domain] = []
-        domain_groups[domain].append((url, filename, folder))
-
-    results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Process each domain group
-        for domain_tasks in domain_groups.values():
-            futures = []
-            for i in range(0, len(domain_tasks), batch_size):
-                batch = domain_tasks[i : min(i + batch_size, len(domain_tasks))]
-                futures.extend(
-                    [
-                        executor.submit(
-                            download_worker, (url, filename, folder, retry_mode)
-                        )
-                        for url, filename, folder in batch
-                    ]
-                )
-
-            # Small delay between batches for same domain
-            time.sleep(0.2)
-
-            for future in futures:
-                try:
-                    url, filename, folder, success, error = future.result()
-                    filepath = os.path.join(folder, filename)
-                    status.add_download(url, filepath, success, error)
-                    results.append(success)
-                except Exception as e:
-                    logger.error(f"Download worker error: {str(e)}")
-                    results.append(False)
-
-    return results, status
+    return [r[0] for r in results], status
 
 
 def remove_duplicate_documents(download_folder="downloads"):
@@ -225,7 +206,7 @@ def remove_duplicate_documents(download_folder="downloads"):
         # Print summary
         if duplicates_found > 0:
             mb_saved = space_saved / (1024 * 1024)  # Convert to MB
-            print(f"\nDuplicate Removal Summary:")
+            print("\nDuplicate Removal Summary:")
             print(f"- Found and removed {duplicates_found} duplicate PDF files")
             print(f"- Saved approximately {mb_saved:.2f} MB of space")
         else:
@@ -358,3 +339,133 @@ def ensure_download_folder(folder):
 
     except Exception:
         return False
+
+
+def format_title(title):
+    """Format document title into a valid filename"""
+    if not title:
+        return None
+
+    # Remove invalid characters
+    title = re.sub(r'[<>:"/\\|?*]', "_", title)
+
+    # Remove multiple spaces and underscores
+    title = re.sub(r"[\s_]+", "_", title)
+
+    # Remove leading/trailing underscores
+    title = title.strip("_")
+
+    # Ensure it's not too long (leave room for extension)
+    if len(title) > 240:
+        title = title[:240]
+
+    return title if title else None
+
+
+@dataclass
+class DownloadTask:
+    url: str
+    filename: str
+    folder: str
+    file_type: str = None
+    retry_count: int = 0
+
+
+class FastDownloader:
+    def __init__(self, concurrent_limit=10, chunk_size=8192):
+        self.concurrent_limit = concurrent_limit
+        self.chunk_size = chunk_size
+        self.session = None
+        self.logger = setup_logger()
+        self.download_semaphore = asyncio.Semaphore(concurrent_limit)
+        self.progress_bars = {}
+
+    async def init_session(self):
+        """Initialize optimized aiohttp session"""
+        if not self.session:
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            connector = aiohttp.TCPConnector(
+                limit=self.concurrent_limit,
+                force_close=False,
+                enable_cleanup_closed=True,
+                ttl_dns_cache=300,
+            )
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "*/*",
+                    "Connection": "keep-alive",
+                },
+            )
+
+    async def download_file_async(self, task: DownloadTask) -> Tuple[bool, str]:
+        """Download single file asynchronously with progress bar"""
+        async with self.download_semaphore:
+            try:
+                filepath = os.path.join(task.folder, task.filename)
+
+                # Create folder if doesn't exist
+                os.makedirs(task.folder, exist_ok=True)
+
+                async with self.session.get(task.url) as response:
+                    if response.status != 200:
+                        return False, f"HTTP {response.status}"
+
+                    total_size = int(response.headers.get("content-length", 0))
+
+                    # Create progress bar
+                    pbar = tqdm_asyncio(
+                        total=total_size, unit="B", unit_scale=True, desc=task.filename
+                    )
+
+                    async with aiofiles.open(filepath, "wb") as f:
+                        async for chunk in response.content.iter_chunked(
+                            self.chunk_size
+                        ):
+                            await f.write(chunk)
+                            pbar.update(len(chunk))
+
+                    pbar.close()
+                    return True, None
+
+            except Exception as e:
+                return False, str(e)
+
+    async def process_batch(self, tasks: List[DownloadTask]) -> List[Tuple[bool, str]]:
+        """Process multiple downloads concurrently"""
+        await self.init_session()
+        results = await asyncio.gather(
+            *[self.download_file_async(task) for task in tasks]
+        )
+        return results
+
+    def extract_links_bs4(self, html_content: str, base_url: str) -> List[Dict]:
+        """Extract download links using BeautifulSoup"""
+        soup = BeautifulSoup(html_content, "html.parser")
+        links = []
+
+        # Find all download links
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if any(ext in href.lower() for ext in [".doc", ".docx", ".pdf"]):
+                full_url = urljoin(base_url, href)
+                file_type = "pdf" if ".pdf" in href.lower() else "doc"
+
+                # Check if it's a valid download link
+                if "download" in a.get("class", []) or "download" in href.lower():
+                    links.append(
+                        {
+                            "url": full_url,
+                            "type": file_type,
+                            "text": a.get_text(strip=True),
+                        }
+                    )
+
+        return links
+
+    async def close(self):
+        """Cleanup resources"""
+        if self.session:
+            await self.session.close()

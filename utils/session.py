@@ -12,9 +12,6 @@ Features:
 import os
 import time
 import pickle
-import logging
-import requests
-import random
 import json
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -23,12 +20,12 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium_stealth import stealth
-from utils.common import setup_logger
-from utils.common import capture_page_source, retry_fetch_url  # Add this import
-from utils.document_formatter import format_document_name  # Add this import
-from utils.logger_setup import ErrorLogger  # Add this import
+from utils.common import setup_logger, capture_page_source, retry_fetch_url
+from utils.document_formatter import format_document_name
+from utils.logger_setup import ErrorLogger
 
 
 class LawVNSession:
@@ -311,7 +308,7 @@ class LawVNSession:
                     )
                     if logout_element and logout_element.is_displayed():
                         return True
-                except:
+                except (TimeoutException, WebDriverException):
                     pass
 
                 # Then check for account menu or user profile indicators
@@ -328,7 +325,7 @@ class LawVNSession:
                         )
                         if element and element.is_displayed():
                             return True
-                    except:
+                    except TimeoutException:
                         continue
 
                 # Finally check for absence of login elements
@@ -535,22 +532,25 @@ class LawVNSession:
                         "Initial page load timeout, checking content anyway"
                     )
 
-            # Quick check for redirect
+            # Check if redirect occurred and wait for download elements
             if "luatvietnam.vn" in self.driver.current_url:
-                # Use dynamic wait for download section
                 try:
-                    download_section = WebDriverWait(self.driver, 5).until(
+                    WebDriverWait(self.driver, 5).until(
                         EC.presence_of_element_located(
                             (By.CSS_SELECTOR, "div.list-download")
                         )
                     )
-                    # If found, wait briefly for any dynamic updates
-                    time.sleep(0.5)
-                except:
+                except TimeoutException:
                     if debug:
-                        self.logger.debug("Download section not found immediately")
+                        self.logger.debug("Download section not found")
+                    return []
+                except WebDriverException as e:
+                    if debug:
+                        self.logger.debug(
+                            f"WebDriver error waiting for download section: {e}"
+                        )
+                    return []
 
-            # Rest of existing find_document_links code...
             # Check if redirected to main page
             if (
                 "luatvietnam.vn" in self.driver.current_url.lower()
@@ -640,9 +640,17 @@ class LawVNSession:
 
             return doc_links
 
+        except TimeoutException as e:
+            if debug:
+                self.logger.error(f"Timeout finding links: {e}")
+            return []
+        except WebDriverException as e:
+            if debug:
+                self.logger.error(f"WebDriver error finding links: {e}")
+            return []
         except Exception as e:
-            if self.debug:
-                self.logger.error(f"Error finding links: {str(e)}")
+            if debug:
+                self.logger.error(f"Error finding links: {e}")
             return []
 
     def login(self, force=False):
@@ -819,7 +827,9 @@ class LawVNSession:
                             encoding="utf-8",
                         ) as f:
                             f.write(self.driver.page_source)
-                    except:
+                    except (WebDriverException, IOError) as e:
+                        if self.debug:
+                            self.logger.debug(f"Failed to save debug info: {str(e)}")
                         pass
 
                 # If more retries left, setup fresh driver and continue
@@ -828,7 +838,7 @@ class LawVNSession:
                         self.logger.debug("Refreshing driver for next attempt")
                     try:
                         self.driver.quit()
-                    except:
+                    except WebDriverException:
                         pass
                     self.setup_driver()
                     time.sleep(retry_delay)
@@ -841,5 +851,7 @@ class LawVNSession:
         if self.driver:
             try:
                 self.driver.quit()
-            except:
+            except Exception as e:
+                if self.debug:
+                    self.logger.error(f"Error during driver cleanup: {str(e)}")
                 pass

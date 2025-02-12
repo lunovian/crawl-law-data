@@ -1,10 +1,9 @@
 import os
 import psutil
-import json
 import time
 import pandas as pd
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from utils.common import setup_logger, DownloadStats
 from crawl.downloader import (
     download_files_parallel,
@@ -12,9 +11,41 @@ from crawl.downloader import (
     download_file,  # Ensure this import is present
 )
 from tqdm import tqdm
-from utils.document_formatter import verify_filename_format, format_document_name
-import logging  # Add this import
+from utils.document_formatter import format_document_name
 from crawl.progress_tracker import ProgressTracker  # Add this import
+
+
+class TabManager:
+    def __init__(self, session, max_tabs=3):
+        self.session = session
+        self.max_tabs = max_tabs
+        self.active_tabs = []
+
+    def create_tab(self):
+        """Create a new browser tab"""
+        self.session.driver.execute_script("window.open('');")
+        new_window = self.session.driver.window_handles[-1]
+        self.active_tabs.append(new_window)
+        return new_window
+
+    def get_available_tab(self):
+        """Get or create an available tab"""
+        while len(self.active_tabs) < self.max_tabs:
+            return self.create_tab()
+        return self.active_tabs[len(self.active_tabs) % self.max_tabs]
+
+    def switch_to_tab(self, tab_handle):
+        """Switch to specific tab"""
+        self.session.driver.switch_to.window(tab_handle)
+
+    def cleanup(self):
+        """Close all tabs except the first one"""
+        main_window = self.session.driver.window_handles[0]
+        for handle in self.session.driver.window_handles[1:]:
+            self.session.driver.switch_to.window(handle)
+            self.session.driver.close()
+        self.session.driver.switch_to.window(main_window)
+        self.active_tabs = []
 
 
 def get_optimal_workers():
@@ -28,7 +59,7 @@ def get_optimal_workers():
         if memory.percent > 80:
             return max(2, cpu_optimal - 2)
         return cpu_optimal
-    except:
+    except Exception:
         return 4  # Default fallback
 
 
@@ -91,7 +122,7 @@ class BatchSettings:
         print("\nBatch Processing Settings")
         print("========================")
         while True:
-            print(f"\nCurrent Settings:")
+            print("\nCurrent Settings:")
             print(f"1. Workers per tab: {self.max_workers}")
             print(f"2. Batch size: {self.batch_size}")
             print(f"3. Parallel tabs: {self.max_tabs}")
@@ -163,7 +194,11 @@ def process_batch_file(file_path, session=None, debug=False, resume=True):
     """Process a batch file containing URLs to download"""
     logger = setup_logger(debug)
 
-    # Create progress tracker
+    # Create settings instance and tab manager
+    settings = BatchSettings()
+    tab_manager = TabManager(session, max_tabs=settings.max_tabs)
+
+    # Create and initialize tracker
     tracker = ProgressTracker(file_path) if resume else None
 
     try:
@@ -177,7 +212,6 @@ def process_batch_file(file_path, session=None, debug=False, resume=True):
         print(f"\nProcessing {total_rows} URLs from {os.path.basename(file_path)}")
 
         with tqdm(total=total_rows, desc="Processing URLs") as pbar:
-            # Update progress bar with already processed items
             if resume and tracker:
                 processed_urls = tracker.get_processed_urls()
                 processed = len(processed_urls)
@@ -185,30 +219,40 @@ def process_batch_file(file_path, session=None, debug=False, resume=True):
 
                 # Filter out already processed URLs
                 df = df[~df["Url"].isin(processed_urls)]
-                if df.empty:
-                    print("All URLs already processed!")
-                    return True
 
-            # Process remaining URLs
-            for _, row in df.iterrows():
-                url = row["Url"]
-                if pd.isna(url):
-                    continue
+            # Process URLs using multiple tabs
+            for chunk_start in range(0, len(df), settings.batch_size):
+                chunk = df.iloc[chunk_start : chunk_start + settings.batch_size]
 
-                try:
-                    if process_document(url, session=session, debug=debug):
+                # Process chunk URLs in parallel using available tabs
+                for _, row in chunk.iterrows():
+                    url = row["Url"]
+                    if pd.isna(url):
+                        continue
+
+                    # Get available tab and process URL
+                    tab = tab_manager.get_available_tab()
+                    tab_manager.switch_to_tab(tab)
+
+                    try:
+                        if process_document(url, session=session, debug=debug):
+                            if tracker:
+                                tracker.mark_success(url)
+                            processed += 1
+                            pbar.set_description(f"Success: {url}")
+                        else:
+                            if tracker:
+                                tracker.mark_failure(url, "Download failed")
+                            pbar.set_description(f"Failed: {url}")
+                    except Exception as e:
                         if tracker:
-                            tracker.mark_success(url)
-                        processed += 1
-                        pbar.update(1)
-                    else:
-                        if tracker:
-                            tracker.mark_failure(url, "Download failed")
-                        pbar.update(1)
-                except Exception as e:
-                    if tracker:
-                        tracker.mark_failure(url, str(e))
+                            tracker.mark_failure(url, str(e))
+                        logger.error(f"Error processing {url}: {str(e)}")
+
                     pbar.update(1)
+
+                # Brief delay between chunks
+                time.sleep(0.5)
 
         print(f"\nCompleted batch processing: {processed}/{total_rows} successful")
         return True
@@ -216,6 +260,10 @@ def process_batch_file(file_path, session=None, debug=False, resume=True):
     except Exception as e:
         logger.error(f"Error processing batch file {file_path}: {str(e)}")
         return False
+
+    finally:
+        # Cleanup tabs when done
+        tab_manager.cleanup()
 
 
 def process_chunk_with_tab(chunk_df, session, progress_data, config):
@@ -353,7 +401,7 @@ def process_url_chunk(args):
 
         return results, downloads
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error in process_url_chunk")
         return [False] * len(urls), [None] * len(urls)
 
@@ -418,7 +466,7 @@ def process_excel_file(args):
 
         return stats, completed
 
-    except Exception as e:
+    except Exception:
         logger.exception(f"Error processing excel file {file_path}")
         return DownloadStats(), 0
 
@@ -426,35 +474,22 @@ def process_excel_file(args):
 def process_document(url, session=None, debug=False):
     """Process single document download"""
     logger = setup_logger(debug)
-
-    try:
-        links = session.find_document_links(url, debug=debug)
-        if not links:
-            logger.info(f"No download links found for {url}")
-            return False
-
-        success = False
-        for link in links:
-            # Use the filename provided by find_document_links
-            filename = link["title"]  # Now provided by session.find_document_links
-            doc_url = link["url"]
-
-            logger.debug(f"Downloading {filename} from {doc_url}")
-
-            # Create folder based on document type
-            folder = os.path.join("downloads", link["type"])
-            if not os.path.exists(folder):
-                os.makedirs(folder, exist_ok=True)
-
-            result, error = download_file(doc_url, filename, folder)
-            if result:
-                logger.info(f"Successfully downloaded {filename}")
-                success = True
-            else:
-                logger.error(f"Failed to download {filename}: {error}")
-
-        return success
-
-    except Exception as e:
-        logger.error(f"Error processing document {url}: {str(e)}")
+    links = find_document_links(url, debug=debug, session=session)
+    print(f"\nProcessing document: {url}")
+    if not links:
+        logger.info(f"No download links found for {url}")
         return False
+
+    for link_info in links:
+        doc_url = link_info["url"]
+
+        filename = format_document_name(link_info["title"])
+        logger.debug(f"Using formatted title: {filename}")
+
+        success, error = download_file(doc_url, filename, "downloads")
+        if success:
+            logger.info(f"Successfully downloaded: {filename}")
+        else:
+            logger.error(f"Failed to download: {error}")
+
+    return True

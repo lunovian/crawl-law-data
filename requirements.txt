@@ -13,3 +13,6 @@ portalocker
 tqdm
 click
 joblib
+aiohttp
+asyncio
+aiofiles

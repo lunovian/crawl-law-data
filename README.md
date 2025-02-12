@@ -1,91 +1,91 @@
 # Law Document Crawler
 
-Tool for downloading law documents from luatvietnam.vn
+A tool for automated crawling and downloading of legal documents from luatvietnam.vn
+
+## Main Features
+
+- Automated Google login with session management
+- Single URL and batch processing support
+- Interactive menu-driven interface
+- Configurable batch settings
+- Progress tracking with resume capability
+- Automatic system resource optimization
+
+## Menu Structure
+
+### 1. Login Options
+
+- Use saved credentials
+- Setup/update credentials
+- Automatic cookie management
+- Session persistence
+
+### 2. Process Single URL
+
+- Direct document download
+- Automatic format detection
+- Progress tracking
+
+### 3. Batch Processing
+
+```bash
+- Process all Excel files in 'batches' folder
+- Select specific Excel file
+- Configure batch settings
+- Show download progress
+- Retry failed downloads
+```
+
+### 4. Batch Configuration
+
+```bash
+- Show current settings
+- Configure settings interactively
+- Auto-configure based on system
+- Reset to defaults
+```
+
+### 5. Cleanup Operations
+
+```bash
+- Remove duplicate PDFs
+- Remove lock files
+- Automatic cleanup on exit
+```
 
 ## Setup
 
-1. Create and activate virtual environment:
-
-```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-```
-
-2. Install package:
-
-```bash
-pip install -e .
-```
-
-3. First-time login:
-
-```bash
-python login.py
-```
-
-4. Run crawler:
-
-```bash
-python -m crawl.crawler [options]
-```
-
-## Usage
-
-Place Excel files containing URLs in the `batches` folder. Each file should have:
-
-- `Url` column: Document URLs
-- `Lĩnh vực` column: Document categories
-- `Ban hành` column: Issue date (dd/mm/yyyy)
-
-## Options
-
-- `--debug`: Enable debug mode
-- `--url URL`: Process single URL
-- `--workers N`: Number of download workers
-- `--batch-size N`: Files per batch
-- `--retry`: Retry failed downloads
-- `--no-resume`: Start fresh download
-
-## Features
-
-- Parallel processing of URLs and files
-- Robust error handling and retry mechanisms
-- Session management with cookies
-- Progress tracking and logging
-
-## Requirements
-
-You can install the required packages using the following command:
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Workflow
+### 2. Run the crawler
 
-1. **Login Setup**: Run `login.py` to log in and save cookies.
-2. **Prepare Excel Files**: Place your Excel files in the `batches` folder.
-3. **Run the Crawler**: Run `crawl.py` with the desired arguments.
+```bash
+python main.py [--debug] [--no-headless]
+```
 
-### File Structure
+### 3. Setup the Google account through the menu
 
-- `login.py`: Handles the login process and saves cookies.
-- `crawl.py`: Main script to process the Excel files and download documents.
-- `utils.py`: Contains utility functions and classes for downloading files, managing sessions, and logging.
+### 4. Place files in `batches/` folder
 
-### Logging
+### 5. Begin crawling with batches
 
-Logs are saved to `crawler.log` and include detailed information about the crawling process, including any errors encountered.
+## Command Line Options
 
-### Progress Tracking
+```bash
+python main.py [options]
 
-Progress is tracked and displayed using a progress bar. The progress is also saved to a `.progress` file for each batch file, allowing the process to resume from where it left off in case of interruptions.
+Options:
+  --debug         Enable debug mode
+  --no-headless   Disable headless browser mode
+```
 
-### Error Handling
+## Requirements
 
-The crawler includes robust error handling and retry mechanisms to ensure that downloads are completed successfully. If a download fails, it will be retried up to three times with increasing delays between attempts.
-
-## License
-
-This project is licensed under the MIT License.
+- Python 3.7+
+- Google Chrome
+- Stable internet connection
+- Excel files with URLs

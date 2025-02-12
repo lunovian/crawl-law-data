@@ -8,3 +8,6 @@ config.json
 *.pkl
 /batches
 *.html
+batch_config.json
+batch_config.json.bak
+/logs
