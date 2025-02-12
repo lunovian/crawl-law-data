@@ -1,13 +1,11 @@
 import os
 import sys
 import signal
-import argparse  # Add this import
+import argparse
 from utils.common import setup_logger, check_setup_and_confirm
-from utils.session import LawVNSession  # Updated import
-from crawl.processor import process_document, process_batch_file, BatchSettings  # Add this import
+from utils.session import LawVNSession
+from crawl.processor import process_document, process_batch_file, BatchSettings
 from crawl.downloader import remove_duplicate_documents
-from monitor.monitor import ProcessMonitor
-from multiprocessing import Process
 import json
 from crawl.progress_tracker import ProgressTracker
 
@@ -77,33 +75,57 @@ def menu_login(debug=False, headless=True):
     """Handle login process"""
     print("\nLogin Options:")
     print("1. Use saved credentials")
-    print("2. Setup/update credentials")
+    print("2. Setup/update credentials") 
     print("3. Back")
     
     choice = input("\nEnter choice (1-3): ").strip()
     
     if choice == '1':
         if os.path.exists('config.json'):
-            print("\nAttempting login with saved credentials...")
-            session = LawVNSession(debug=debug, headless=headless)
+            print("\nAttempting login...")
+            
+            # First try with saved cookies in headless mode
+            if os.path.exists('lawvn_cookies.pkl'):
+                print("Found saved cookies, attempting to use them...")
+                session = LawVNSession(debug=debug, headless=headless)
+                session.load_cookies()
+                if session.check_login():
+                    print("\n✓ Login successful with saved cookies!")
+                    return session
+                print("Saved cookies are invalid, trying with credentials...")
+            
+            # If cookies failed or don't exist, try normal login
+            session = LawVNSession(debug=debug, headless=False)
             if session.login(force=True):
                 print("\n✓ Login successful!")
+                # Save cookies for future use
+                session.save_cookies()
+                
+                # Create new session with desired headless setting
+                if headless:
+                    new_session = LawVNSession(debug=debug, headless=True)
+                    new_session.load_cookies()
+                    return new_session
                 return session
             else:
                 print("\n✗ Login failed with saved credentials.")
                 if input("Would you like to update credentials? (y/n): ").lower() == 'y':
                     setup_config()
-        else:
-            print("\nNo saved credentials found.")
-            if input("Would you like to setup credentials? (y/n): ").lower() == 'y':
-                setup_config()
     
     elif choice == '2':
         setup_config()
         if input("\nWould you like to try logging in now? (y/n): ").lower() == 'y':
-            session = LawVNSession(debug=debug, headless=headless)
+            session = LawVNSession(debug=debug, headless=False)
             if session.login(force=True):
                 print("\n✓ Login successful!")
+                # Save cookies for future use
+                session.save_cookies()
+                
+                # Create new session with desired headless setting
+                if headless:
+                    new_session = LawVNSession(debug=debug, headless=True)
+                    new_session.load_cookies()
+                    return new_session
                 return session
             else:
                 print("\n✗ Login failed. Please check your credentials.")
@@ -188,10 +210,6 @@ def menu_batch_process(debug=False, session=None):
             except ValueError:
                 print("Please enter a valid number")
                 
-    elif choice == '3':
-        # BatchSettings is now handled inside process_batch_file
-        print("\nBatch settings are automatically configured.")
-        
     elif choice == '4':
         show_download_progress()
         
@@ -278,31 +296,9 @@ def menu_cleanup():
                         pass
         print(f"\nRemoved {count} lock files")
 
-def menu_monitor():
-    """Start performance monitoring"""
-    duration = input("\nEnter monitoring duration in minutes (default: 60): ").strip()
-    try:
-        duration = int(duration) * 60 if duration else 3600
-    except:
-        duration = 3600
-        
-    print(f"\nStarting performance monitor for {duration/60:.0f} minutes...")
-    monitor = ProcessMonitor()
-    process = Process(target=monitor.monitor, kwargs={'duration': duration})
-    process.start()
-    
-    input("\nPress Enter to stop monitoring...")
-    process.terminate()
-    process.join()
-    print("\nMonitoring stopped.")
-
-def cleanup_and_exit(monitor_process=None):
+def cleanup_and_exit(monitor_process=None):  # We can simplify this function
     """Clean shutdown of all processes"""
     print("\nShutting down gracefully...")
-    
-    if monitor_process and monitor_process.is_alive():
-        monitor_process.terminate()
-        monitor_process.join(timeout=1)
     
     # Clean any lock files
     for root, _, files in os.walk("downloads"):
@@ -313,7 +309,6 @@ def cleanup_and_exit(monitor_process=None):
                 except:
                     pass
     
-    # Exit without printing path
     os._exit(0)
 
 def signal_handler(signum, frame):
@@ -328,74 +323,36 @@ def main_menu(debug=False, headless=True):
         print("\nLaw Document Crawler")
         print("==================")
 
-        # When session is not available, do not duplicate login menu here.
         if not session or not session.check_login():
-            # Directly call menu_login without reprinting the same options
-            session = menu_login(debug, headless)
+            session = menu_login(debug=debug, headless=headless)
             if not session:
-                # Optionally allow updating credentials or exiting, if not logged in
-                print("\nLogin failed or canceled.")
-                input("\nPress Enter to continue...")
-            continue
+                input("\nPress Enter to try again...")
+                continue
 
-        # Only show main menu after successful login
         clear_screen()
         print("\nLaw Document Crawler")
         print("==================")
-        print(f"Status: Logged in as {session.config['google_credentials']['email']}")
+        print("1. Process single URL")
+        print("2. Batch process")
+        print("3. Cleanup")
+        print("4. Exit")
         
-        print("\nOptions:")
-        print("1. Process Single URL")
-        print("2. Start Batch Processing")
-        print("3. Cleanup Operations")
-        print("4. Performance Monitor")
-        print("5. Logout")
-        print("6. Exit")
-        
-        choice = input("\nEnter choice (1-6): ").strip()
+        choice = input("\nEnter your choice: ").strip()
         
         if choice == '1':
-            menu_single_url(debug, headless, session)
+            menu_single_url(debug=debug, headless=headless, session=session)
         elif choice == '2':
-            menu_batch_process(debug, session)
+            menu_batch_process(debug=debug, session=session)
         elif choice == '3':
             menu_cleanup()
-        elif choice == '4':
-            menu_monitor()
-        elif choice == '5':
-            if session:
-                try:
-                    session.driver.quit()
-                except:
-                    pass
-                session = None
-                print("\nLogged out successfully!")
-        elif choice == '6':
-            if session:
-                try:
-                    session.driver.quit()
-                except:
-                    pass
-            print("\nExiting...")
-            sys.exit(0)
+        elif choice == '4':  # Changed from 5 to 4
+            cleanup_and_exit()
         else:
-            print("\nInvalid choice!")
-        
-        input("\nPress Enter to continue...")
+            input("\nInvalid choice. Press Enter to continue...")
 
-if __name__ == "__main__":
-    # Parse command line arguments
-    args = parse_args()
-    
-    # Register signal handlers
+if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    try:
-        logger = setup_logger(args.debug)  # Pass debug flag
-        main_menu(debug=args.debug, headless=not args.no_headless)  # Pass debug flag
-    except KeyboardInterrupt:
-        cleanup_and_exit()
-    except Exception as e:
-        print(f"\nError: {str(e)}")
-        cleanup_and_exit()
+    args = parse_args()
+    debug_mode = args.debug
+    headless_mode = not args.no_headless
+    main_menu(debug=debug_mode, headless=headless_mode)

@@ -1,3 +1,13 @@
+"""
+Common utilities and helper functions for the law document crawler.
+Provides:
+- Logging setup and configuration
+- Download statistics tracking
+- Debug utilities
+- Setup verification
+- Missing file detection
+"""
+
 import logging
 import logging.handlers
 import contextlib
@@ -5,6 +15,8 @@ import sys
 import os
 from collections import defaultdict
 import time
+import pandas as pd  # Add this import
+import json
 
 def setup_logger(debug=False):
     """Setup logger with file and console output"""
@@ -158,10 +170,48 @@ class DownloadStats:
             'failed': self.failed
         }
 
+def check_missing_downloads():
+    """Check for missing downloaded files based on progress files"""
+    missing_downloads = []
+    
+    # Get all Excel files in batches folder
+    if not os.path.exists('batches'):
+        return missing_downloads
+        
+    excel_files = [f for f in os.listdir('batches') if f.endswith(('.xlsx', '.xls'))]
+    
+    for excel_file in excel_files:
+        batch_path = os.path.join('batches', excel_file)
+        progress_file = f"{batch_path}.progress.json"
+        
+        try:
+            # Load progress data
+            if os.path.exists(progress_file):
+                with open(progress_file, 'r', encoding='utf-8') as f:
+                    progress = json.load(f)
+                    
+                # Check each processed entry
+                for entry in progress.get('processed', []):
+                    if 'file_name' in entry and 'url' in entry:
+                        # Get expected file locations
+                        file_name = entry['file_name']
+                        for ext in ['.doc', '.docx', '.pdf']:
+                            file_path = os.path.join('downloads', f"{file_name}{ext}")
+                            if not os.path.exists(file_path):
+                                missing_downloads.append({
+                                    'url': entry['url'],
+                                    'file': file_path,
+                                    'batch': excel_file
+                                })
+                                
+        except Exception as e:
+            logging.error(f"Error checking {excel_file}: {str(e)}")
+            
+    return missing_downloads
+
 def check_setup_and_confirm():
     """Check setup status and get user confirmation"""
-    from crawl.verifier import check_missing_downloads  # Import here to avoid circular dependency
-    
+    # Now we can directly use check_missing_downloads since it's in the same file
     setup_status = {
         'cookies': os.path.exists('lawvn_cookies.pkl'),
         'batches': os.path.exists('batches'),

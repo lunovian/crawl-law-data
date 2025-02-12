@@ -10,3 +10,6 @@ selenium-stealth>=1.0.6
 psutil
 filelock
 portalocker
+tqdm
+click
+joblib
