@@ -77,7 +77,7 @@ A tool for automated crawling and downloading of legal documents from luatvietna
 - Each URL is assigned a **hash (URL hash)** to ensure uniqueness.
 - Filename structure: `prefix_timestamp_urlhash.extension`
 
-**Example:** `document_20240214_3574.pdf`
+**Example:** `quyet dinh 1756 qd bgtvt bo giao thong van tai 53709 d1.doc`
 
 ### 🛑 Duplicate Detection
 
